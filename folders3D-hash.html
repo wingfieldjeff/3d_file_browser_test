@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Interactive File Tree with Varied Hash‐Based Shapes</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #111; }
+    /* Overlays for file preview and context menu */
+    #filePreview, #contextMenu {
+      position: absolute;
+      background-color: rgba(0,0,0,0.85);
+      color: #fff;
+      padding: 10px;
+      border-radius: 5px;
+      display: none;
+      z-index: 1000;
+      font-family: Arial, sans-serif;
+      font-size: 14px;
+    }
+    #contextMenu div {
+      padding: 5px;
+      cursor: pointer;
+    }
+    #contextMenu div:hover {
+      background-color: rgba(255,255,255,0.1);
+    }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.162.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.162.0/examples/jsm/",
+        "three/addons/postprocessing/EffectComposer.js": "https://unpkg.com/three@0.162.0/examples/jsm/postprocessing/EffectComposer.js",
+        "three/addons/postprocessing/RenderPass.js": "https://unpkg.com/three@0.162.0/examples/jsm/postprocessing/RenderPass.js",
+        "three/addons/postprocessing/UnrealBloomPass.js": "https://unpkg.com/three@0.162.0/examples/jsm/postprocessing/UnrealBloomPass.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <!-- Overlays for file preview and context menu -->
+  <div id="filePreview"></div>
+  <div id="contextMenu"></div>
+  
+  <script type="module">
+    import * as THREE from "three";
+    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+    import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+    import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+    import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+
+    // ---------------- Global Parameter Objects ----------------
+    // Parameters for node appearance.
+    const params = {
+      minRadius: 2,
+      maxRadius: 5,
+      radius: 3,
+      minDisplacementStrength: 0.1,
+      maxDisplacementStrength: 0.5,
+      displacementStrength: 0.3,
+      minNoiseScale: 0.5,
+      maxNoiseScale: 2.0,
+      noiseScale: 1.0,
+      minMetalness: 0.0,
+      maxMetalness: 1.0,
+      metalness: 0.5,
+      minRoughness: 0.0,
+      maxRoughness: 1.0,
+      roughness: 0.5
+    };
+
+    // Global controls for bloom, rotation, and wireframe.
+    const globalParams = {
+      bloomEnabled: true,
+      bloomIntensity: .2,
+      rotationSpeed: 0.1,
+      wireframe: true
+    };
+
+    // ---------------- Global Animation Configuration ----------------
+    const animationConfig = {
+      moveDuration: 1000,    // Duration (ms) for each node move.
+      snapThreshold: 0.01,   // World units: when node is this close to target, snap.
+      debug: false
+    };
+
+    // ---------------- Basic Scene Setup ----------------
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x222222);
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 40, 150);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    document.body.appendChild(renderer.domElement);
+
+    // ---------------- Postprocessing: Bloom ----------------
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), globalParams.bloomIntensity, 0.4, 0.1);
+    if (globalParams.bloomEnabled) composer.addPass(bloomPass);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = globalParams.rotationSpeed;
+
+    // ---------------- Floor & Lights ----------------
+    const floorGeometry = new THREE.PlaneGeometry(500, 500);
+    const floorMaterial = new THREE.ShadowMaterial({ opacity: 0.5 });
+    const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+    floor.rotation.x = -Math.PI/2;
+    floor.position.y = -50;
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    // ---------------- Directional Light with Shadows ----------------
+    const light = new THREE.DirectionalLight(0xffffff, 1.5);
+    light.position.set(50, 100, 50);
+    light.castShadow = true;
+    light.shadow.mapSize.width = 2048;
+    light.shadow.mapSize.height = 2048;
+    light.shadow.camera.near = 1;
+    light.shadow.camera.far = 500;
+    light.shadow.camera.left = -100;
+    light.shadow.camera.right = 100;
+    light.shadow.camera.top = 100;
+    light.shadow.camera.bottom = -100;
+    scene.add(light);
+
+    const ambientLight = new THREE.AmbientLight(0x555555);
+    scene.add(ambientLight);
+
+    // ---------------- Globals & Data Structures ----------------
+    let selectedNode = null;
+    let isDragging = false;
+    let rootNode = null;
+    let currentContextNode = null; // For context menu actions.
+    const nodes = [];
+    const labels = new Map();
+    const lines = new Map();
+    const childrenMap = new Map();
+    const baseSpacing = 20;
+
+    const defaultRadius = params.radius;  // All shapes use this radius.
+
+    // ---------------- Raycaster & Mouse ----------------
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+
+    // ---------------- Helper: createLabel ----------------
+    function createLabel(text) {
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      ctx.font = "24px Arial";
+      const textWidth = ctx.measureText(text).width;
+      canvas.width = textWidth;
+      canvas.height = 30;
+      ctx.font = "24px Arial";
+      ctx.fillStyle = "white";
+      ctx.fillText(text, 0, 24);
+      const texture = new THREE.CanvasTexture(canvas);
+      const spriteMaterial = new THREE.SpriteMaterial({ map: texture, transparent: true });
+      const sprite = new THREE.Sprite(spriteMaterial);
+      sprite.scale.set(canvas.width * 0.1, canvas.height * 0.1, 1);
+      return sprite;
+    }
+
+    // ---------------- Helper: Hash Functions & Unique Shape Generation ----------------
+    function hashString(str) {
+      let hash = 5381;
+      for (let i = 0; i < str.length; i++) {
+        hash = ((hash << 5) + hash) + str.charCodeAt(i);
+        hash = hash & hash; // Force 32-bit integer
+      }
+      let hex = (hash >>> 0).toString(16);
+      hex = ("00000000" + hex).slice(-8);
+      return hex.repeat(4).slice(0,32);
+    }
+
+    // ---- New helper to derive numeric values from portions of the hash ----
+    function hashToRange(hash, start, length, min, max) {
+      const substr = hash.substr(start, length);
+      const intValue = parseInt(substr, 16);
+      const maxValue = Math.pow(16, length) - 1;
+      const normalized = intValue / maxValue;
+      return min + normalized * (max - min);
+    }
+
+    // Modified shape determination: Mix all hex digits.
+    function determineAnimationShape(hash) {
+      const shapes = [
+        'Sphere', 'Cube', 'Torus', 'Plane', 'Cone', 'Cylinder',
+        'Tetrahedron', 'Icosahedron', 'Dodecahedron', 'Octahedron',
+        'Ring', 'Circle', 'TorusKnot'
+      ];
+      let result = 1;
+      for (let i = 0; i < hash.length; i++) {
+        result = (result * 31 + parseInt(hash[i], 16)) % 100000;
+      }
+      return shapes[result % shapes.length];
+    }
+
+    function generateGeometryFromShape(shape, radius) {
+      switch(shape) {
+        case 'Cube':
+          return new THREE.BoxGeometry(radius*2, radius*2, radius*2);
+        case 'Torus':
+          return new THREE.TorusGeometry(radius, radius/3, 16, 100);
+        case 'Plane':
+          return new THREE.PlaneGeometry(radius*2, radius*2, 16, 16);
+        case 'Cone':
+          return new THREE.ConeGeometry(radius, radius*2, 32);
+        case 'Cylinder':
+          return new THREE.CylinderGeometry(radius, radius, radius*2, 32);
+        case 'Tetrahedron':
+          return new THREE.TetrahedronGeometry(radius);
+        case 'Icosahedron':
+          return new THREE.IcosahedronGeometry(radius);
+        case 'Dodecahedron':
+          return new THREE.DodecahedronGeometry(radius);
+        case 'Octahedron':
+          return new THREE.OctahedronGeometry(radius);
+        case 'Ring':
+          return new THREE.RingGeometry(radius*0.5, radius, 32);
+        case 'Circle':
+          return new THREE.CircleGeometry(radius, 32);
+        case 'TorusKnot':
+          return new THREE.TorusKnotGeometry(radius, radius/4, 100, 16);
+        case 'Sphere':
+        default:
+          return new THREE.SphereGeometry(radius, 16, 16);
+      }
+    }
+
+    // ---------------- Helper: Get Node's Final Position ----------------
+    function getFinalPosition(node) {
+      return node.userData.targetPosition ? node.userData.targetPosition : node.position;
+    }
+
+    // ---------------- Shader Code ----------------
+    const vertexShaderCode = `
+      uniform float time;
+      uniform float displacementStrength;
+      uniform float noiseScale;
+      uniform mat4 lightMatrix;
+      varying vec3 vNormal;
+      varying vec3 vPosition;
+      varying vec4 vShadowCoord;
+      
+      vec3 mod289(vec3 x) { return x - floor(x * (1.0/289.0)) * 289.0; }
+      vec2 mod289(vec2 x) { return x - floor(x * (1.0/289.0)) * 289.0; }
+      vec3 permute(vec3 x) { return mod289(((x * 34.0) + 1.0) * x); }
+      float snoise(vec2 v) {
+        const vec4 C = vec4(0.211324865405187, 0.366025403784439,
+                            -0.577350269189626, 0.024390243902439);
+        vec2 i = floor(v + dot(v, C.yy));
+        vec2 x0 = v - i + dot(i, C.xx);
+        vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+        vec4 x12 = x0.xyxy + C.xxzz;
+        x12.xy -= i1;
+        vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0))
+                          + i.x + vec3(0.0, i1.x, 1.0));
+        vec3 m = max(0.5 - vec3(dot(x0, x0),
+                                dot(x12.xy, x12.xy),
+                                dot(x12.zw, x12.zw)), 0.0);
+        m = m * m;
+        m = m * m;
+        vec3 x = 2.0 * fract(p * C.www) - 1.0;
+        vec3 h = abs(x) - 0.5;
+        vec3 ox = floor(x + 0.5);
+        vec3 a0 = x - ox;
+        m *= 1.79284291400159 - 0.85373472095314 * (a0 * a0 + h * h);
+        vec3 g;
+        g.x = a0.x * x0.x + h.x * x0.y;
+        g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+        return 130.0 * dot(m, g);
+      }
+      
+      void main() {
+        vNormal = normal;
+        vPosition = position;
+        float noise = snoise((position.xy + time) * noiseScale);
+        vec3 newPosition = position + normal * noise * displacementStrength;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(newPosition, 1.0);
+        vShadowCoord = lightMatrix * vec4(position, 1.0);
+      }
+    `;
+
+    const fragmentShaderCode = `
+      uniform float time;
+      uniform vec3 colorA;
+      uniform vec3 colorB;
+      uniform vec3 color3;
+      uniform vec3 lightDirection;
+      uniform float ambient;
+      uniform sampler2D shadowMap;
+      uniform float bloomIntensity;
+      varying vec3 vNormal;
+      varying vec3 vPosition;
+      varying vec4 vShadowCoord;
+      
+      float getShadow(vec3 shadowCoord) {
+        vec3 projCoords = shadowCoord;
+        float shadowDepth = texture2D(shadowMap, projCoords.xy).r;
+        return (projCoords.z - 0.005) > shadowDepth ? 0.5 : 1.0;
+      }
+      
+      void main() {
+        float diffuse = max(dot(normalize(vNormal), normalize(lightDirection)), 0.0);
+        vec3 shadowCoords = vShadowCoord.xyz / vShadowCoord.w;
+        float shadowFactor = getShadow(shadowCoords);
+        float intensity = dot(normalize(vNormal), vec3(0.0, 0.0, 1.0));
+        vec3 baseColor = mix(colorA, colorB, intensity);
+        vec3 finalColor = mix(baseColor, color3, 0.2) * (ambient + diffuse) * shadowFactor;
+        finalColor *= bloomIntensity;
+        gl_FragColor = vec4(finalColor, 1.0);
+      }
+    `;
+
+    // ---------------- Create Unique Node Mesh ----------------
+    // Uses the node's unique path to generate a hash, choose a shape, and generate geometry.
+    function createUniqueNodeMesh(isFolder, path) {
+      const hash = hashString(path);
+      const shape = determineAnimationShape(hash);
+      // --- Derive shape variables from portions of the hash ---
+      const derivedRadius = hashToRange(hash, 18, 3, params.minRadius, params.maxRadius);
+      const derivedDisplacementStrength = hashToRange(hash, 21, 3, params.minDisplacementStrength, params.maxDisplacementStrength);
+      const derivedNoiseScale = hashToRange(hash, 24, 3, params.minNoiseScale, params.maxNoiseScale);
+      const derivedMetalness = hashToRange(hash, 27, 2, params.minMetalness, params.maxMetalness);
+      const derivedRoughness = hashToRange(hash, 29, 3, params.minRoughness, params.maxRoughness);
+      // --- New derived parameters ---
+      const derivedBloomIntensity = hashToRange(hash, 0, 3, 0.1, 1.0);
+      const derivedWireframe = hashToRange(hash, 3, 1, 0, 1) < 0.5;
+      
+      const geometry = generateGeometryFromShape(shape, derivedRadius);
+      // Derive colors from slices of the hash.
+      const colorA = '#' + hash.slice(0,6);
+      const colorB = '#' + hash.slice(6,12);
+      const color3 = '#' + hash.slice(12,18);
+      const material = new THREE.ShaderMaterial({
+        uniforms: {
+          time: { value: 0 },
+          displacementStrength: { value: isFolder ? derivedDisplacementStrength : derivedDisplacementStrength * 0.5 },
+          noiseScale: { value: derivedNoiseScale },
+          lightMatrix: { value: new THREE.Matrix4().identity() },
+          colorA: { value: new THREE.Color(colorA) },
+          colorB: { value: new THREE.Color(colorB) },
+          color3: { value: new THREE.Color(color3) },
+          lightDirection: { value: new THREE.Vector3(0,1,0).normalize() },
+          ambient: { value: 0.3 },
+          shadowMap: { value: new THREE.Texture() },
+          metalness: { value: derivedMetalness },
+          roughness: { value: derivedRoughness },
+          bloomIntensity: { value: derivedBloomIntensity }
+        },
+        vertexShader: vertexShaderCode,
+        fragmentShader: fragmentShaderCode,
+        wireframe: derivedWireframe,
+        side: THREE.DoubleSide
+      });
+      const mesh = new THREE.Mesh(geometry, material);
+      // Set shadows on each node
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      return mesh;
+    }
+
+    // ---------------- Node Creation & Path Computation ----------------
+    // Computes a unique path (e.g. "root/folder1/file1.txt") and creates the node.
+    function addTreeNode(nodeData, position, parent = null) {
+      const isFolder = nodeData.children !== undefined;
+      let path = parent && parent.userData.path ? parent.userData.path + "/" + nodeData.name : nodeData.name;
+      const mesh = createUniqueNodeMesh(isFolder, path);
+      if (parent === null) {
+        // For the root, override shader colors to green.
+        mesh.material.uniforms.colorA.value.set(0x00ff00);
+        mesh.material.uniforms.colorB.value.set(0x00ff00);
+        mesh.material.uniforms.color3.value.set(0x00ff00);
+      }
+      const depth = parent ? parent.userData.depth + 1 : 0;
+      mesh.userData.depth = depth;
+      mesh.position.copy(parent ? new THREE.Vector3(0,0,0) : position);
+      mesh.userData.name = nodeData.name;
+      mesh.userData.isFolder = isFolder;
+      mesh.userData.parent = parent;
+      mesh.userData.isRoot = parent === null;
+      mesh.userData.path = path;
+      scene.add(mesh);
+      nodes.push(mesh);
+      if (parent) {
+        if (!childrenMap.has(parent)) childrenMap.set(parent, []);
+        childrenMap.get(parent).push(mesh);
+      } else {
+        rootNode = mesh;
+      }
+      const label = createLabel(nodeData.name);
+      label.position.set(mesh.position.x, mesh.position.y + 5, mesh.position.z);
+      scene.add(label);
+      labels.set(mesh, label);
+      if (parent) {
+        const lineGeom = new THREE.BufferGeometry();
+        const lineMaterial = new THREE.LineBasicMaterial({ color: 0xffffff });
+        const line = new THREE.Line(lineGeom, lineMaterial);
+        scene.add(line);
+        lines.set(mesh, { line, parent });
+        updateLine(mesh);
+      }
+      if (isFolder && nodeData.children) {
+        nodeData.children.forEach(childData => {
+          addTreeNode(childData, new THREE.Vector3(), mesh);
+        });
+      }
+    }
+
+    // ---------------- Update Connecting Line ----------------
+    function updateLine(node) {
+      if (!lines.has(node)) return;
+      const { line, parent } = lines.get(node);
+      const positions = new Float32Array([
+        parent.position.x, parent.position.y, parent.position.z,
+        node.position.x, node.position.y, node.position.z
+      ]);
+      line.geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+      line.geometry.needsUpdate = true;
+    }
+
+    // ---------------- ASCII Logging ----------------
+    function generateAsciiTree(node, indent = "") {
+      let tree = indent + (node.userData.isFolder ? "📁 " : "📄 ") + node.userData.name + "\n";
+      if (childrenMap.has(node)) {
+        childrenMap.get(node).forEach((child, i) => {
+          const isLast = i === childrenMap.get(node).length - 1;
+          tree += generateAsciiTree(child, indent + (isLast ? "    " : "│   "));
+        });
+      }
+      return tree;
+    }
+    function logAsciiTree() {
+      if (rootNode) console.log(generateAsciiTree(rootNode));
+      else console.log("Root node not found.");
+    }
+
+    // ---------------- 3D Spherical Layout with Cone Bias & Animated Transitions ----------------
+    function layoutChildren(parent) {
+      const children = childrenMap.get(parent);
+      if (!children || children.length === 0) return;
+      const finalParentPos = getFinalPosition(parent);
+      const parentDist = finalParentPos.distanceTo(rootNode.position);
+      const newRadius = parentDist + baseSpacing;
+      const k = children.length;
+      if (parent.userData.isRoot) {
+        for (let i = 0; i < k; i++) {
+          const phi = Math.acos(1 - (2*(i+1))/(k+1));
+          const theta = (2*Math.PI*i)/k;
+          const x = rootNode.position.x + newRadius * Math.sin(phi)*Math.cos(theta);
+          const y = rootNode.position.y + newRadius * Math.cos(phi);
+          const z = rootNode.position.z + newRadius * Math.sin(phi)*Math.sin(theta);
+          const child = children[i];
+          child.userData.startPosition = child.position.clone();
+          child.userData.targetPosition = new THREE.Vector3(x,y,z);
+          child.userData.moveStartTime = performance.now();
+          child.userData.moveDuration = animationConfig.moveDuration;
+          const label = labels.get(child);
+          if (label) {
+            label.userData = {};
+            label.userData.startPosition = label.position.clone();
+            label.userData.targetPosition = new THREE.Vector3(x,y+5,z);
+            label.userData.moveStartTime = performance.now();
+            label.userData.moveDuration = animationConfig.moveDuration;
+          }
+          layoutChildren(child);
+        }
+      } else {
+        const d = new THREE.Vector3().subVectors(finalParentPos, rootNode.position).normalize();
+        let arbitrary = new THREE.Vector3(0,1,0);
+        if (Math.abs(d.dot(arbitrary)) > 0.99) arbitrary.set(1,0,0);
+        const u = new THREE.Vector3().crossVectors(d, arbitrary).normalize();
+        const v = new THREE.Vector3().crossVectors(d, u).normalize();
+        const coneAngle = Math.PI/4;
+        for (let i = 0; i < k; i++) {
+          const child = children[i];
+          const offsetAngle = (coneAngle*(i+1))/(k+1);
+          const azimuth = (2*Math.PI*i)/k;
+          const childDir = new THREE.Vector3()
+            .addScaledVector(d, Math.cos(offsetAngle))
+            .addScaledVector(u, Math.sin(offsetAngle)*Math.cos(azimuth))
+            .addScaledVector(v, Math.sin(offsetAngle)*Math.sin(azimuth))
+            .normalize();
+          const x = rootNode.position.x + newRadius * childDir.x;
+          const y = rootNode.position.y + newRadius * childDir.y;
+          const z = rootNode.position.z + newRadius * childDir.z;
+          child.userData.startPosition = child.position.clone();
+          child.userData.targetPosition = new THREE.Vector3(x,y,z);
+          child.userData.moveStartTime = performance.now();
+          child.userData.moveDuration = animationConfig.moveDuration;
+          const label = labels.get(child);
+          if (label) {
+            label.userData = {};
+            label.userData.startPosition = label.position.clone();
+            label.userData.targetPosition = new THREE.Vector3(x,y+5,z);
+            label.userData.moveStartTime = performance.now();
+            label.userData.moveDuration = animationConfig.moveDuration;
+          }
+          layoutChildren(child);
+        }
+      }
+    }
+
+    // ---------------- Tree Modification Helpers ----------------
+    function duplicateTree(node) {
+      const newData = { name: node.userData.name + " (copy)" };
+      if (childrenMap.has(node)) {
+        newData.children = [];
+        childrenMap.get(node).forEach(child => {
+          newData.children.push(duplicateTree(child));
+        });
+      }
+      return newData;
+    }
+    function removeTreeNode(node) {
+      if (childrenMap.has(node)) {
+        const children = childrenMap.get(node);
+        children.forEach(child => removeTreeNode(child));
+        childrenMap.delete(node);
+      }
+      const label = labels.get(node);
+      if (label) { scene.remove(label); labels.delete(node); }
+      if (lines.has(node)) {
+        const { line } = lines.get(node);
+        scene.remove(line); lines.delete(node);
+      }
+      if (node.userData.parent && childrenMap.has(node.userData.parent)) {
+        const siblings = childrenMap.get(node.userData.parent);
+        const index = siblings.indexOf(node);
+        if (index !== -1) siblings.splice(index, 1);
+      }
+      scene.remove(node);
+      const idx = nodes.indexOf(node);
+      if (idx !== -1) nodes.splice(idx, 1);
+    }
+
+    // ---------------- refreshNodeShape: Update a Node’s Shape on Rename ----------------
+    function refreshNodeShape(node) {
+      const parent = node.userData.parent;
+      const newPath = parent ? parent.userData.path + "/" + node.userData.name : node.userData.name;
+      node.userData.path = newPath;
+      const newMesh = createUniqueNodeMesh(node.userData.isFolder, newPath);
+      newMesh.position.copy(node.position);
+      // Dispose old geometry and material.
+      node.geometry.dispose();
+      node.material.dispose();
+      node.geometry = newMesh.geometry;
+      node.material = newMesh.material;
+      node.material.wireframe = newMesh.material.wireframe;
+    }
+
+    // ---------------- Build Initial File Tree ----------------
+    // ---------------- Build Initial File Tree ----------------
+addTreeNode(
+  {
+    "name": "root",
+    "children": [
+      {
+        "name": "Documents",
+        "children": [
+          { "name": "report.docx" },
+          { "name": "invoice_2025.pdf" },
+          { "name": "notes.txt" },
+          { "name": "presentation.pptx" },
+          { "name": "budget.xlsx" }
+        ]
+      },
+      {
+        "name": "Images",
+        "children": [
+          { "name": "holiday_pic.jpg" },
+          { "name": "profile.png" },
+          { "name": "diagram.svg" },
+          { "name": "screenshot_2025-01-01.png" }
+        ]
+      },
+      {
+        "name": "Scripts",
+        "children": [
+          { "name": "index.html" },
+          { "name": "main.js" },
+          { "name": "app.py" },
+          { "name": "styles.css" },
+          { "name": "data.json" }
+        ]
+      },
+      {
+        "name": "Archive",
+        "children": [
+          { "name": "old_project.zip" },
+          { "name": "backup.tar.gz" },
+          { "name": "legacy_code.rar" }
+        ]
+      },
+      {
+        "name": "Music",
+        "children": [
+          { "name": "song.mp3" },
+          { "name": "album.flac" },
+          { "name": "podcast_episode.aac" }
+        ]
+      },
+      {
+        "name": "Videos",
+        "children": [
+          { "name": "movie.mp4" },
+          { "name": "clip.mov" },
+          { "name": "trailer.mkv" }
+        ]
+      },
+      {
+        "name": "Misc",
+        "children": [
+          { "name": "readme.md" },
+          { "name": "todo.txt" },
+          { "name": "config.ini" }
+        ]
+      }
+    ]
+  },
+  new THREE.Vector3(0, 10, 0)
+);
+
+    logAsciiTree();
+    layoutChildren(rootNode);
+
+    // ---------------- Interactive Node Functionality ----------------
+    const filePreviewDiv = document.getElementById("filePreview");
+    const contextMenuDiv = document.getElementById("contextMenu");
+    document.addEventListener("click", () => {
+      filePreviewDiv.style.display = "none";
+      contextMenuDiv.style.display = "none";
+    });
+    renderer.domElement.addEventListener("contextmenu", e => e.preventDefault());
+    function showFilePreview(node, clientX, clientY) {
+      filePreviewDiv.innerHTML = `<strong>File Preview</strong><br>${node.userData.name}`;
+      filePreviewDiv.style.left = clientX + "px";
+      filePreviewDiv.style.top = clientY + "px";
+      filePreviewDiv.style.display = "block";
+    }
+    function showContextMenu(node, clientX, clientY) {
+      currentContextNode = node;
+      contextMenuDiv.innerHTML = `<div id="addFile">Add File</div>
+                                  <div id="addFolder">Add Folder</div>
+                                  <div id="copyNode">Duplicate Here</div>
+                                  <div id="renameNode">Rename</div>
+                                  <div id="deleteNode">Delete</div>`;
+      contextMenuDiv.style.left = clientX + "px";
+      contextMenuDiv.style.top = clientY + "px";
+      contextMenuDiv.style.display = "block";
+      document.getElementById("addFile").onclick = (e) => {
+        e.stopPropagation();
+        if (!currentContextNode.userData.isFolder) {
+          alert("Cannot add a file to a file. Please select a folder.");
+          return;
+        }
+        addTreeNode({ name: "newFile.txt" }, new THREE.Vector3(), currentContextNode);
+        contextMenuDiv.style.display = "none";
+        layoutChildren(rootNode);
+        logAsciiTree();
+      };
+      document.getElementById("addFolder").onclick = (e) => {
+        e.stopPropagation();
+        if (!currentContextNode.userData.isFolder) {
+          alert("Cannot add a folder to a file. Please select a folder.");
+          return;
+        }
+        addTreeNode({ name: "newFolder", children: [] }, new THREE.Vector3(), currentContextNode);
+        contextMenuDiv.style.display = "none";
+        layoutChildren(rootNode);
+        logAsciiTree();
+      };
+      document.getElementById("copyNode").onclick = (e) => {
+        e.stopPropagation();
+        if (currentContextNode.userData.isRoot) {
+          alert("Cannot duplicate the root node.");
+          return;
+        }
+        const duplicateData = duplicateTree(currentContextNode);
+        addTreeNode(duplicateData, new THREE.Vector3(), currentContextNode.userData.parent);
+        contextMenuDiv.style.display = "none";
+        layoutChildren(rootNode);
+        logAsciiTree();
+      };
+      document.getElementById("renameNode").onclick = (e) => {
+        e.stopPropagation();
+        const newName = prompt("Enter new name for node:", currentContextNode.userData.name);
+        if (newName) {
+          currentContextNode.userData.name = newName;
+          // Update the label.
+          const oldLabel = labels.get(currentContextNode);
+          if (oldLabel) scene.remove(oldLabel);
+          const newLabel = createLabel(newName);
+          newLabel.position.copy(currentContextNode.position).setY(currentContextNode.position.y+5);
+          scene.add(newLabel);
+          labels.set(currentContextNode, newLabel);
+          // Refresh the node's shape based on its new name (and therefore path).
+          refreshNodeShape(currentContextNode);
+          contextMenuDiv.style.display = "none";
+          logAsciiTree();
+        }
+      };
+      document.getElementById("deleteNode").onclick = (e) => {
+        e.stopPropagation();
+        if (currentContextNode.userData.isRoot) {
+          alert("Cannot delete the root node.");
+          return;
+        }
+        removeTreeNode(currentContextNode);
+        contextMenuDiv.style.display = "none";
+        layoutChildren(rootNode);
+        logAsciiTree();
+      };
+    }
+    function onMouseDown(event) {
+      event.preventDefault();
+      const rect = renderer.domElement.getBoundingClientRect();
+      mouse.x = ((event.clientX - rect.left)/rect.width)*2 - 1;
+      mouse.y = -((event.clientY - rect.top)/rect.height)*2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+      const intersects = raycaster.intersectObjects(nodes);
+      if (intersects.length > 0) {
+        const intersectedNode = intersects[0].object;
+        if (event.button === 0)
+          showFilePreview(intersectedNode, event.clientX, event.clientY);
+        else if (event.button === 2)
+          showContextMenu(intersectedNode, event.clientX, event.clientY);
+      }
+    }
+    renderer.domElement.addEventListener("mousedown", onMouseDown, false);
+
+    // ---------------- Animation Loop with Tunable Variables & Optimizations ----------------
+    function animate() {
+      requestAnimationFrame(animate);
+      const now = performance.now();
+      nodes.forEach(node => {
+        if (node.userData.targetPosition) {
+          const t0 = node.userData.moveStartTime;
+          const duration = node.userData.moveDuration;
+          let t = (now - t0) / duration;
+          if (t > 1) t = 1;
+          if (node.position.distanceTo(node.userData.targetPosition) < animationConfig.snapThreshold) {
+            node.position.copy(node.userData.targetPosition);
+            delete node.userData.targetPosition;
+            delete node.userData.startPosition;
+            delete node.userData.moveStartTime;
+            delete node.userData.moveDuration;
+          } else {
+            node.position.lerpVectors(node.userData.startPosition, node.userData.targetPosition, t);
+          }
+          if (lines.has(node)) updateLine(node);
+          if (animationConfig.debug)
+            console.log(`Node ${node.userData.name} t: ${t}`);
+          if (node.material && node.material.uniforms && node.material.uniforms.time)
+            node.material.uniforms.time.value = now * 0.001;
+        }
+      });
+      labels.forEach((label, node) => {
+        if (label.userData && label.userData.targetPosition) {
+          const t0 = label.userData.moveStartTime;
+          const duration = label.userData.moveDuration;
+          let t = (now - t0) / duration;
+          if (t > 1) t = 1;
+          if (label.position.distanceTo(label.userData.targetPosition) < animationConfig.snapThreshold) {
+            label.position.copy(label.userData.targetPosition);
+            delete label.userData.targetPosition;
+            delete label.userData.startPosition;
+            delete label.userData.moveStartTime;
+            delete label.userData.moveDuration;
+          } else {
+            label.position.lerpVectors(label.userData.startPosition, label.userData.targetPosition, t);
+          }
+        }
+      });
+      controls.autoRotateSpeed = globalParams.rotationSpeed;
+      controls.update();
+      if (globalParams.bloomEnabled) {
+        bloomPass.strength = globalParams.bloomIntensity;
+        composer.render();
+      } else {
+        renderer.render(scene, camera);
+      }
+    }
+    animate();
+
+    // ---------------- Handle Window Resizing ----------------
+    window.addEventListener("resize", () => {
+      camera.aspect = window.innerWidth/window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      composer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>
