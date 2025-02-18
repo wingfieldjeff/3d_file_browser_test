@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Hash Animation Visualization</title>
+  <style>
+    /* -----------------------------------------------------
+       Global CSS Reset and Base Styles
+       ----------------------------------------------------- */
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      overflow: hidden;
+      background: #000;
+      font-family: sans-serif;
+    }
+    /* -----------------------------------------------------
+       Scene Container: Holds only the Three.js canvas.
+       ----------------------------------------------------- */
+    #scene-container {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+    }
+    /* -----------------------------------------------------
+       UI Container: Holds the GUI controls; positioned above the scene.
+       ----------------------------------------------------- */
+    #controls-container {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 1000;
+    }
+    /* -----------------------------------------------------
+       Dark Aesthetic and Neon Accents for the GUI Panels
+       ----------------------------------------------------- */
+    /* Left-hand Control Panel */
+    #hash-controls {
+      background: rgba(20, 20, 20, 0.95);
+      border: 1px solid #39ff14;
+      color: #39ff14;
+      padding: 10px;
+      margin-bottom: 10px;
+      border-radius: 5px;
+    }
+    /* Hash Output Info Panel */
+    #hash-info {
+      background: rgba(20, 20, 20, 0.95);
+      border: 1px solid #39ff14;
+      color: #39ff14;
+      padding: 10px;
+      margin-bottom: 10px;
+      border-radius: 5px;
+      line-height: 1.4;
+      font-size: 14px;
+      max-height: 80vh;  /* Limit the height */
+      overflow-y: auto;  /* Enable vertical scrollbar when needed */
+    }
+    /* Derived Controls Panel */
+    #derived-controls {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid #39ff14;
+      color: #39ff14;
+    }
+    #derived-controls label {
+      font-size: 13px;
+    }
+    #derived-controls input[type="range"],
+    #derived-controls input[type="color"],
+    #derived-controls select {
+      width: 100%;
+      margin-bottom: 5px;
+      background: #111;
+      color: #39ff14;
+      border: 1px solid #39ff14;
+    }
+    /* -----------------------------------------------------
+       Global UI Toggle Button Styling
+       ----------------------------------------------------- */
+    #toggleUIButton {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 2000;
+      padding: 5px 10px;
+      background: #111;
+      color: #39ff14;
+      border: 1px solid #39ff14;
+      border-radius: 5px;
+    }
+    /* -----------------------------------------------------
+       Generic Button Styling
+       ----------------------------------------------------- */
+    button {
+      background: #111;
+      color: #39ff14;
+      border: 1px solid #39ff14;
+      padding: 5px 10px;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #222;
+    }
+  </style>
+  <!-- -----------------------------------------------------
+       Importmap for loading Three.js and its add-ons.
+       ----------------------------------------------------- -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.162.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.162.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <!-- -----------------------------------------------------
+       Scene Container: Where the Three.js canvas is appended.
+       ----------------------------------------------------- -->
+  <div id="scene-container"></div>
+  
+  <!-- -----------------------------------------------------
+       UI Container: Contains the control panels and info.
+       ----------------------------------------------------- -->
+  <div id="controls-container">
+    <!-- Left-hand Control Panel -->
+    <div id="hash-controls">
+      <label for="hashSelect">Select Example Hash:</label>
+      <select id="hashSelect">
+        <option value="32966f7b21c01375197efa26fe1e5e93">Example 1</option>
+        <option value="abcdef0123456789abcdef0123456789">Example 2</option>
+        <option value="1234567890abcdef1234567890abcdef">Example 3</option>
+        <option value="fedcba9876543210fedcba9876543210">Example 4</option>
+        <option value="0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f">Example 5</option>
+        <option value="11223344556677889900aabbccddeeff">Example 6</option>
+        <option value="deadbeefdeadbeefdeadbeefdeadbeef">Example 7</option>
+        <option value="cafebabecafebabecafebabecafebabe">Example 8</option>
+      </select>
+      <button id="switchButton">Switch Hash</button>
+      <button id="randomizeButton">Randomize</button>
+    </div>
+    
+    <!-- Hash Output Info Panel -->
+    <div id="hash-info">
+      <!-- This area is populated by the updateHashInfo() function -->
+    </div>
+  </div>
+  
+  <!-- -----------------------------------------------------
+       Global UI Toggle Button: Toggles visibility of the UI.
+       ----------------------------------------------------- -->
+  <button id="toggleUIButton">Hide UI</button>
+  
+  <!-- -----------------------------------------------------
+       Main JavaScript Module: Sets up the Three.js scene,
+       shaders, controls, and GUI interactions.
+       ----------------------------------------------------- -->
+  <script type="module">
+    //<![CDATA[
+    // -----------------------------------------------------
+    // Import necessary Three.js modules and add-ons.
+    // -----------------------------------------------------
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+    import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+    import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+    
+    // -----------------------------------------------------
+    // Global UI Toggle: Toggles the visibility of the UI container.
+    // Uses computed style to check the current display state.
+    // -----------------------------------------------------
+    document.getElementById("toggleUIButton").addEventListener("click", function() {
+      const uiContainer = document.getElementById("controls-container");
+      const currentDisplay = window.getComputedStyle(uiContainer).display;
+      if (currentDisplay === "none") {
+        uiContainer.style.display = "block";
+        this.textContent = "Hide UI";
+      } else {
+        uiContainer.style.display = "none";
+        this.textContent = "Show UI";
+      }
+    });
+    
+    // -----------------------------------------------------
+    // Helper function: Determines the animation shape based on the file hash.
+    // -----------------------------------------------------
+    function determineAnimationShape(hash) {
+      const shapes = [
+        'Sphere', 'Cube', 'Torus', 'Plane', 'Cone', 'Cylinder',
+        'Tetrahedron', 'Icosahedron', 'Dodecahedron', 'Octahedron',
+        'Ring', 'Circle', 'TorusKnot'
+      ];
+      if (hash.length < 23) return shapes[0];
+      const hexChar = hash.charAt(22);
+      const hexValue = parseInt(hexChar, 16);
+      return shapes[hexValue % shapes.length];
+    }
+    
+    // -----------------------------------------------------
+    // Helper function: Updates the hash info panel with derived values.
+    // Now includes metalness and roughness.
+    // -----------------------------------------------------
+    function updateHashInfo(hashData, shape, fileHash, wireframe) {
+      const infoDiv = document.getElementById('hash-info');
+      infoDiv.innerHTML = `<strong>Input Hash:</strong> ${fileHash}<br>
+<strong>Derived Values:</strong><br>
+Color A: ${hashData.colorA}<br>
+Color B: ${hashData.colorB}<br>
+Color 3: ${hashData.color3}<br>
+Raw Displacement: ${hashData.rawDisplacement.toFixed(3)}<br>
+Displacement Strength: ${hashData.displacementStrength.toFixed(3)}<br>
+Raw Noise: ${hashData.rawNoise.toFixed(3)}<br>
+Noise Scale: ${hashData.noiseScale.toFixed(3)}<br>
+Radius: ${hashData.radius.toFixed(3)}<br>
+Slow Factor: ${hashData.slowFactor.toFixed(3)}<br>
+Rotation Speed: ${hashData.rotationSpeed.toFixed(3)}<br>
+Bloom Intensity: ${hashData.bloomIntensity.toFixed(3)}<br>
+Metalness: ${hashData.metalness.toFixed(3)}<br>
+Roughness: ${hashData.roughness.toFixed(3)}<br>
+<strong>Animation Shape:</strong> ${shape}<br>
+Wireframe: ${wireframe ? 'Yes' : 'No'}`;
+    }
+    
+    // -----------------------------------------------------
+    // Helper function: Parses the file hash to derive animation parameters.
+    // Now computes metalness and roughness from additional hash slices.
+    // -----------------------------------------------------
+    function parseHash(hash, params) {
+      const colorA = `#${hash.slice(0, 6)}`;
+      const colorB = `#${hash.slice(6, 12)}`;
+      const color3 = `#${hash.slice(12, 18)}`;
+      
+      const rawDisplacement = parseInt(hash.slice(18, 20), 16) / 255;
+      const rawNoise = parseInt(hash.slice(20, 22), 16) / 255;
+      const displacementStrength = params.minDisplacementStrength +
+        (params.maxDisplacementStrength - params.minDisplacementStrength) * rawDisplacement;
+      const noiseScale = params.minNoiseScale +
+        (params.maxNoiseScale - params.minNoiseScale) * rawNoise;
+      
+      const rawRadius = parseInt(hash.slice(24,26), 16) / 255;
+      const derivedRadius = params.minRadius + (params.maxRadius - params.minRadius) * rawRadius;
+      
+      const rawSlowFactor = parseInt(hash.slice(26,28), 16) / 255;
+      const derivedSlowFactor = params.minSlowFactor + (params.maxSlowFactor - params.minSlowFactor) * rawSlowFactor;
+      
+      const rawRotationSpeed = parseInt(hash.slice(28,30), 16) / 255;
+      const derivedRotationSpeed = params.minRotationSpeed + (params.maxRotationSpeed - params.minRotationSpeed) * rawRotationSpeed;
+      
+      const rawBloomIntensity = parseInt(hash.slice(30,32), 16) / 255;
+      const derivedBloomIntensity = 3.0 * rawBloomIntensity;
+      
+      // Extract metalness and roughness from the hash if long enough; default to 0.5 otherwise.
+      const rawMetalness = hash.length >= 34 ? parseInt(hash.slice(32,34), 16) / 255 : 0.5;
+      const metalness = params.minMetalness + (params.maxMetalness - params.minMetalness) * rawMetalness;
+      const rawRoughness = hash.length >= 36 ? parseInt(hash.slice(34,36), 16) / 255 : 0.5;
+      const roughness = params.minRoughness + (params.maxRoughness - params.minRoughness) * rawRoughness;
+      
+      return {
+        displacementStrength,
+        noiseScale,
+        colorA,
+        colorB,
+        color3,
+        rawDisplacement,
+        rawNoise,
+        radius: derivedRadius,
+        slowFactor: derivedSlowFactor,
+        rotationSpeed: derivedRotationSpeed,
+        bloomIntensity: derivedBloomIntensity,
+        metalness,   // New parameter
+        roughness    // New parameter
+      };
+    }
+    
+    // -----------------------------------------------------
+    // Helper function: Generates a random hexadecimal string.
+    // -----------------------------------------------------
+    function generateRandomHex(length) {
+      let result = '';
+      const hexChars = '0123456789abcdef';
+      for (let i = 0; i < length; i++) {
+        result += hexChars[Math.floor(Math.random() * 16)];
+      }
+      return result;
+    }
+    
+    // -----------------------------------------------------
+    // Class: HashAnimationApp
+    // Sets up the entire Three.js scene, camera, lighting, controls,
+    // postprocessing, and creates the unique animation based on the file hash.
+    // -----------------------------------------------------
+    class HashAnimationApp {
+      constructor(fileHash) {
+        this.running = true;  // Flag to control the animation loop.
+        this.fileHash = fileHash;  // Store the current file hash.
+        // Default animation parameters, including metalness and roughness:
+        this.params = {
+          minRadius: 0.25,
+          maxRadius: 2.0,
+          radius: 1.5,
+          minDisplacementStrength: 0.2,
+          maxDisplacementStrength: 1.0,
+          displacementStrength: 0.3,
+          minNoiseScale: 0.5,
+          maxNoiseScale: 2.0,
+          noiseScale: 2.0,
+          minSlowFactor: 0.1,
+          maxSlowFactor: 1.0,
+          slowFactor: 0.5,
+          minRotationSpeed: 0.0,
+          maxRotationSpeed: 5.0,
+          rotationSpeed: 0.2,
+          bloomIntensity: 0.1,
+          bloomEnabled: true,
+          colorA: '#0e8140',
+          colorB: '#ff66cc',
+          color3: '#220066',
+          // New properties for PBR parameters:
+          minMetalness: 0.0,
+          maxMetalness: 1.0,
+          metalness: 0.5,
+          minRoughness: 0.0,
+          maxRoughness: 1.0,
+          roughness: 0.5,
+          wireframe: false,
+          shape: 'Sphere'
+        };
+        this.init();                      // Initialize scene, camera, lights, etc.
+        this.createAnimation(this.fileHash, true);  // Create the animation object.
+        this.animate();                   // Start the animation loop.
+      }
+    
+      // -----------------------------------------------------
+      // init method: Sets up the scene, camera, renderer,
+      // controls, lighting, and postprocessing.
+      // -----------------------------------------------------
+      init() {
+        this.scene = new THREE.Scene();
+        this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+        this.camera.position.set(0, 0, 10);
+        this.camera.lookAt(new THREE.Vector3(0, 0, 0));
+    
+        this.renderer = new THREE.WebGLRenderer({ antialias: true });
+        this.renderer.setSize(window.innerWidth, window.innerHeight);
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        this.renderer.shadowMap.enabled = true;
+        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        document.getElementById('scene-container').appendChild(this.renderer.domElement);
+    
+        this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+        this.controls.enableDamping = true;
+        this.controls.autoRotate = true;
+        this.controls.autoRotateSpeed = this.params.rotationSpeed * this.params.slowFactor;
+    
+        this.composer = new EffectComposer(this.renderer);
+        this.composer.addPass(new RenderPass(this.scene, this.camera));
+        this.bloomPass = new UnrealBloomPass(
+          new THREE.Vector2(window.innerWidth, window.innerHeight),
+          this.params.bloomIntensity, 0.4, 0.1
+        );
+        if (this.params.bloomEnabled) {
+          this.composer.addPass(this.bloomPass);
+        }
+    
+        const ambientLight = new THREE.AmbientLight(0xffffff, 3.0);
+        this.scene.add(ambientLight);
+    
+        const light = new THREE.DirectionalLight(0xffffff, 1.5);
+        light.position.set(5, 10, 5);
+        light.castShadow = true;
+        light.shadow.mapSize.width = 2048;
+        light.shadow.mapSize.height = 2048;
+        light.shadow.camera.near = 0.5;
+        light.shadow.camera.far = 20;
+        light.shadow.camera.left = -5;
+        light.shadow.camera.right = 5;
+        light.shadow.camera.top = 5;
+        light.shadow.camera.bottom = -5;
+        this.scene.add(light);
+        this.directionalLight = light;
+    
+        const biasMatrix = new THREE.Matrix4();
+        biasMatrix.set(
+          0.5, 0.0, 0.0, 0.5,
+          0.0, 0.5, 0.0, 0.5,
+          0.0, 0.0, 0.5, 0.5,
+          0.0, 0.0, 0.0, 1.0
+        );
+        this.shadowMatrix = new THREE.Matrix4();
+        this.shadowMatrix.multiplyMatrices(biasMatrix, light.shadow.camera.projectionMatrix);
+        this.shadowMatrix.multiply(light.shadow.camera.matrixWorldInverse);
+    
+        window.addEventListener('resize', () => this.onResize());
+        this.clock = new THREE.Clock();
+      }
+    
+      // -----------------------------------------------------
+      // createAnimation method: Builds the 3D animation object based on the file hash.
+      // -----------------------------------------------------
+      createAnimation(fileHash, resetFromHash = true) {
+        if (this.objectMesh) {
+          this.scene.remove(this.objectMesh);
+          this.objectMesh.geometry.dispose();
+          this.objectMesh.material.dispose();
+        }
+    
+        this.fileHash = fileHash;
+        let parsed = parseHash(fileHash, this.params);
+    
+        if (resetFromHash) {
+          this.params.radius = parsed.radius;
+          this.params.slowFactor = parsed.slowFactor;
+          this.params.rotationSpeed = parsed.rotationSpeed;
+          this.params.bloomIntensity = parsed.bloomIntensity;
+          this.params.colorA = parsed.colorA;
+          this.params.colorB = parsed.colorB;
+          this.params.color3 = parsed.color3;
+          this.params.metalness = parsed.metalness;
+          this.params.roughness = parsed.roughness;
+          // Use the new naming for animation shape.
+          this.params.shape = determineAnimationShape(fileHash);
+        }
+    
+        if (fileHash.length > 23) {
+          this.params.wireframe = (parseInt(fileHash.charAt(23), 16) % 2 === 0);
+        } else {
+          this.params.wireframe = false;
+        }
+    
+        const shapeRules = {
+          'Cube': { noiseScaleRange: [0.5, 2.0] },
+          'Plane': { forceWireframe: true },
+          'Circle': { forceWireframe: true },
+          'Ring': { forceWireframe: true }
+        };
+        if (shapeRules[this.params.shape]) {
+          const rules = shapeRules[this.params.shape];
+          if (rules.forceWireframe) {
+            this.params.wireframe = true;
+          }
+          if (rules.noiseScaleRange) {
+            const [minNoise, maxNoise] = rules.noiseScaleRange;
+            parsed.noiseScale = minNoise + (maxNoise - minNoise) * parsed.rawNoise;
+          }
+        }
+    
+        updateHashInfo(parsed, this.params.shape, fileHash, this.params.wireframe);
+        this.setupDerivedSliders();
+    
+        let geometry;
+        switch (this.params.shape) {
+          case 'Cube':
+            geometry = new THREE.BoxGeometry(this.params.radius * 2, this.params.radius * 2, this.params.radius * 2);
+            break;
+          case 'Torus':
+            geometry = new THREE.TorusGeometry(this.params.radius, this.params.radius / 3, 16, 100);
+            break;
+          case 'Plane':
+            geometry = new THREE.PlaneGeometry(this.params.radius * 3, this.params.radius * 3, 64, 64);
+            break;
+          case 'Cone':
+            geometry = new THREE.ConeGeometry(this.params.radius, this.params.radius * 2, 32);
+            break;
+          case 'Cylinder':
+            geometry = new THREE.CylinderGeometry(this.params.radius, this.params.radius, this.params.radius * 2, 32);
+            break;
+          case 'Tetrahedron':
+            geometry = new THREE.TetrahedronGeometry(this.params.radius);
+            break;
+          case 'Icosahedron':
+            geometry = new THREE.IcosahedronGeometry(this.params.radius);
+            break;
+          case 'Dodecahedron':
+            geometry = new THREE.DodecahedronGeometry(this.params.radius);
+            break;
+          case 'Octahedron':
+            geometry = new THREE.OctahedronGeometry(this.params.radius);
+            break;
+          case 'Ring':
+            geometry = new THREE.RingGeometry(this.params.radius * 0.5, this.params.radius, 32);
+            break;
+          case 'Circle':
+            geometry = new THREE.CircleGeometry(this.params.radius, 32);
+            break;
+          case 'TorusKnot':
+            geometry = new THREE.TorusKnotGeometry(this.params.radius, this.params.radius / 4, 100, 16);
+            break;
+          case 'Sphere':
+          default:
+            geometry = new THREE.SphereGeometry(this.params.radius, 64, 64);
+        }
+    
+        // Create a ShaderMaterial with added uniforms for metalness and roughness.
+        const material = new THREE.ShaderMaterial({
+          uniforms: {
+            time: { value: 0 },
+            displacementStrength: { value: this.params.displacementStrength },
+            noiseScale: { value: this.params.noiseScale },
+            colorA: { value: new THREE.Color(this.params.colorA) },
+            colorB: { value: new THREE.Color(this.params.colorB) },
+            color3: { value: new THREE.Color(this.params.color3) },
+            metalness: { value: this.params.metalness },
+            roughness: { value: this.params.roughness },
+            lightDirection: { value: new THREE.Vector3(5, 10, 5).normalize() },
+            ambient: { value: 0.3 },
+            shadowMap: { value: this.directionalLight.shadow.map },
+            lightMatrix: { value: this.shadowMatrix }
+          },
+          vertexShader: `
+            // ----- Vertex Shader -----
+            // Applies noise-based displacement and calculates shadow coordinates.
+            uniform float time;
+            uniform float displacementStrength;
+            uniform float noiseScale;
+            uniform mat4 lightMatrix;
+            varying vec3 vNormal;
+            varying vec3 vPosition;
+            varying vec4 vShadowCoord;
+    
+            vec3 mod289(vec3 x) { return x - floor(x * (1.0/289.0)) * 289.0; }
+            vec2 mod289(vec2 x) { return x - floor(x * (1.0/289.0)) * 289.0; }
+            vec3 permute(vec3 x) { return mod289(((x * 34.0) + 1.0) * x); }
+            float snoise(vec2 v) {
+              const vec4 C = vec4(0.211324865405187, 0.366025403784439,
+                                  -0.577350269189626, 0.024390243902439);
+              vec2 i = floor(v + dot(v, C.yy));
+              vec2 x0 = v - i + dot(i, C.xx);
+              vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+              vec4 x12 = x0.xyxy + C.xxzz;
+              x12.xy -= i1;
+              vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0))
+                                + i.x + vec3(0.0, i1.x, 1.0));
+              vec3 m = max(0.5 - vec3(dot(x0, x0),
+                                      dot(x12.xy, x12.xy),
+                                      dot(x12.zw, x12.zw)), 0.0);
+              m = m * m;
+              m = m * m;
+              vec3 x = 2.0 * fract(p * C.www) - 1.0;
+              vec3 h = abs(x) - 0.5;
+              vec3 ox = floor(x + 0.5);
+              vec3 a0 = x - ox;
+              m *= 1.79284291400159 - 0.85373472095314 * (a0 * a0 + h * h);
+              vec3 g;
+              g.x = a0.x * x0.x + h.x * x0.y;
+              g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+              return 130.0 * dot(m, g);
+            }
+            void main() {
+              vNormal = normal;
+              vPosition = position;
+              float noise = snoise((position.xy + time) * noiseScale);
+              vec3 newPosition = position + normal * noise * displacementStrength;
+              gl_Position = projectionMatrix * modelViewMatrix * vec4(newPosition, 1.0);
+              vShadowCoord = lightMatrix * vec4(position, 1.0);
+            }
+          `,
+          fragmentShader: `
+            // ----- Fragment Shader -----
+            // Blends colors and applies lighting with shadow effects.
+            uniform float time;
+            uniform vec3 colorA;
+            uniform vec3 colorB;
+            uniform vec3 color3;
+            uniform vec3 lightDirection;
+            uniform float ambient;
+            uniform sampler2D shadowMap;
+            varying vec3 vNormal;
+            varying vec3 vPosition;
+            varying vec4 vShadowCoord;
+    
+            float getShadow(vec3 shadowCoord) {
+              vec3 projCoords = shadowCoord;
+              float shadowDepth = texture2D(shadowMap, projCoords.xy).r;
+              return (projCoords.z - 0.005) > shadowDepth ? 0.5 : 1.0;
+            }
+            void main() {
+              float diffuse = max(dot(normalize(vNormal), normalize(lightDirection)), 0.0);
+              vec3 shadowCoords = vShadowCoord.xyz / vShadowCoord.w;
+              float shadowFactor = getShadow(shadowCoords);
+              float intensity = dot(normalize(vNormal), vec3(0.0, 0.0, 1.0));
+              vec3 baseColor = mix(colorA, colorB, intensity);
+              vec3 finalColor = mix(baseColor, color3, 0.2) * (ambient + diffuse) * shadowFactor;
+              gl_FragColor = vec4(finalColor, 1.0);
+            }
+          `,
+          wireframe: this.params.wireframe,
+          side: THREE.DoubleSide
+        });
+    
+        this.objectMesh = new THREE.Mesh(geometry, material);
+        console.log("Generated Mesh:", this.objectMesh);
+        console.log("Mesh Geometry:", geometry);
+        console.log("Mesh Material:", material);
+    
+        this.objectMesh.castShadow = true;
+        this.objectMesh.receiveShadow = true;
+        this.scene.add(this.objectMesh);
+      }
+    
+      // -----------------------------------------------------
+      // animate method: Main loop that updates uniforms, rotates the object,
+      // updates controls, and renders the scene.
+      // -----------------------------------------------------
+      animate() {
+        if (!this.running) return;
+        requestAnimationFrame(() => this.animate());
+        const slowFactor = this.params.slowFactor;
+        const time = this.clock.getElapsedTime() * slowFactor;
+        if (this.objectMesh) {
+          this.objectMesh.material.uniforms.time.value = time;
+          this.objectMesh.rotation.y += 0.005 * slowFactor;
+        }
+        this.controls.autoRotateSpeed = this.params.rotationSpeed * slowFactor;
+        this.controls.update();
+        if (this.params.bloomEnabled) {
+          this.composer.render();
+        } else {
+          this.renderer.render(this.scene, this.camera);
+        }
+      }
+    
+      // -----------------------------------------------------
+      // onResize method: Adjusts camera and renderer when the window is resized.
+      // -----------------------------------------------------
+      onResize() {
+        this.camera.aspect = window.innerWidth / window.innerHeight;
+        this.camera.updateProjectionMatrix();
+        this.renderer.setSize(window.innerWidth, window.innerHeight);
+        this.composer.setSize(window.innerWidth, window.innerHeight);
+      }
+    
+      // -----------------------------------------------------
+      // destroy method: Stops the animation loop and cleans up resources.
+      // -----------------------------------------------------
+      destroy() {
+        this.running = false;
+        if (this.renderer && this.renderer.domElement && this.renderer.domElement.parentNode) {
+          this.renderer.domElement.parentNode.removeChild(this.renderer.domElement);
+        }
+      }
+    
+      // -----------------------------------------------------
+      // setupDerivedSliders method: Creates and sets up UI controls for
+      // manually adjusting derived parameters.
+      // -----------------------------------------------------
+      setupDerivedSliders() {
+        let container = document.getElementById("derived-controls");
+        if (!container) {
+          container = document.createElement("div");
+          container.id = "derived-controls";
+          container.innerHTML = `
+            <br><strong>Adjust Derived Values:</strong><br>
+            <label for="radiusSlider">Radius:</label>
+            <input type="range" id="radiusSlider" min="${this.params.minRadius}" max="${this.params.maxRadius}" step="0.01">
+            <span id="radiusValue">${this.params.radius}</span>
+            <br>
+            <label for="displacementStrengthSlider">Displacement Strength:</label>
+            <input type="range" id="displacementStrengthSlider" min="${this.params.minDisplacementStrength}" max="${this.params.maxDisplacementStrength}" step="0.01">
+            <span id="displacementStrengthValue">${this.params.displacementStrength}</span>
+            <br>
+            <label for="noiseScaleSlider">Noise Scale:</label>
+            <input type="range" id="noiseScaleSlider" min="${this.params.minNoiseScale}" max="${this.params.maxNoiseScale}" step="0.01">
+            <span id="noiseScaleValue">${this.params.noiseScale}</span>
+            <br>
+            <label for="slowFactorSlider">Slow Factor:</label>
+            <input type="range" id="slowFactorSlider" min="${this.params.minSlowFactor}" max="${this.params.maxSlowFactor}" step="0.01">
+            <span id="slowFactorValue">${this.params.slowFactor}</span>
+            <br>
+            <label for="rotationSpeedSlider">Rotation Speed:</label>
+            <input type="range" id="rotationSpeedSlider" min="${this.params.minRotationSpeed}" max="${this.params.maxRotationSpeed}" step="0.01">
+            <span id="rotationSpeedValue">${this.params.rotationSpeed}</span>
+            <br>
+            <label for="bloomIntensitySlider">Bloom Intensity:</label>
+            <input type="range" id="bloomIntensitySlider" min="0" max="3" step="0.01">
+            <span id="bloomIntensityValue">${this.params.bloomIntensity}</span>
+            <br>
+            <!-- New sliders for metalness and roughness -->
+            <label for="metalnessSlider">Metalness:</label>
+            <input type="range" id="metalnessSlider" min="${this.params.minMetalness}" max="${this.params.maxMetalness}" step="0.01">
+            <span id="metalnessValue">${this.params.metalness}</span>
+            <br>
+            <label for="roughnessSlider">Roughness:</label>
+            <input type="range" id="roughnessSlider" min="${this.params.minRoughness}" max="${this.params.maxRoughness}" step="0.01">
+            <span id="roughnessValue">${this.params.roughness}</span>
+            <br><hr><br>
+            <strong>Manual Overrides:</strong><br>
+            <label for="shapeSelect">Base Shape:</label>
+            <select id="shapeSelect">
+              <option value="Sphere">Sphere</option>
+              <option value="Cube">Cube</option>
+              <option value="Torus">Torus</option>
+              <option value="Plane">Plane</option>
+              <option value="Cone">Cone</option>
+              <option value="Cylinder">Cylinder</option>
+              <option value="Tetrahedron">Tetrahedron</option>
+              <option value="Icosahedron">Icosahedron</option>
+              <option value="Dodecahedron">Dodecahedron</option>
+              <option value="Octahedron">Octahedron</option>
+              <option value="Ring">Ring</option>
+              <option value="Circle">Circle</option>
+              <option value="TorusKnot">TorusKnot</option>
+            </select>
+            <br>
+            <label for="colorAInput">Color A:</label>
+            <input type="color" id="colorAInput" value="${this.params.colorA}">
+            <br>
+            <label for="colorBInput">Color B:</label>
+            <input type="color" id="colorBInput" value="${this.params.colorB}">
+            <br>
+            <label for="color3Input">Color 3:</label>
+            <input type="color" id="color3Input" value="${this.params.color3}">
+          `;
+          document.getElementById("hash-info").appendChild(container);
+        } else {
+          document.getElementById("radiusSlider").value = this.params.radius;
+          document.getElementById("radiusValue").textContent = this.params.radius;
+          document.getElementById("displacementStrengthSlider").value = this.params.displacementStrength;
+          document.getElementById("displacementStrengthValue").textContent = this.params.displacementStrength;
+          document.getElementById("noiseScaleSlider").value = this.params.noiseScale;
+          document.getElementById("noiseScaleValue").textContent = this.params.noiseScale;
+          document.getElementById("slowFactorSlider").value = this.params.slowFactor;
+          document.getElementById("slowFactorValue").textContent = this.params.slowFactor;
+          document.getElementById("rotationSpeedSlider").value = this.params.rotationSpeed;
+          document.getElementById("rotationSpeedValue").textContent = this.params.rotationSpeed;
+          document.getElementById("bloomIntensitySlider").value = this.params.bloomIntensity;
+          document.getElementById("bloomIntensityValue").textContent = this.params.bloomIntensity;
+          document.getElementById("metalnessSlider").value = this.params.metalness;
+          document.getElementById("metalnessValue").textContent = this.params.metalness;
+          document.getElementById("roughnessSlider").value = this.params.roughness;
+          document.getElementById("roughnessValue").textContent = this.params.roughness;
+          document.getElementById("shapeSelect").value = this.params.shape;
+          document.getElementById("colorAInput").value = this.params.colorA;
+          document.getElementById("colorBInput").value = this.params.colorB;
+          document.getElementById("color3Input").value = this.params.color3;
+        }
+    
+        document.getElementById("radiusSlider").oninput = () => {
+          this.params.radius = parseFloat(document.getElementById("radiusSlider").value);
+          document.getElementById("radiusValue").textContent = document.getElementById("radiusSlider").value;
+          this.createAnimation(this.fileHash, false);
+        };
+        document.getElementById("displacementStrengthSlider").oninput = () => {
+          this.params.displacementStrength = parseFloat(document.getElementById("displacementStrengthSlider").value);
+          document.getElementById("displacementStrengthValue").textContent = document.getElementById("displacementStrengthSlider").value;
+          if (this.objectMesh)
+            this.objectMesh.material.uniforms.displacementStrength.value = this.params.displacementStrength;
+        };
+        document.getElementById("noiseScaleSlider").oninput = () => {
+          this.params.noiseScale = parseFloat(document.getElementById("noiseScaleSlider").value);
+          document.getElementById("noiseScaleValue").textContent = document.getElementById("noiseScaleSlider").value;
+          if (this.objectMesh)
+            this.objectMesh.material.uniforms.noiseScale.value = this.params.noiseScale;
+        };
+        document.getElementById("slowFactorSlider").oninput = () => {
+          this.params.slowFactor = parseFloat(document.getElementById("slowFactorSlider").value);
+          document.getElementById("slowFactorValue").textContent = document.getElementById("slowFactorSlider").value;
+        };
+        document.getElementById("rotationSpeedSlider").oninput = () => {
+          this.params.rotationSpeed = parseFloat(document.getElementById("rotationSpeedSlider").value);
+          document.getElementById("rotationSpeedValue").textContent = document.getElementById("rotationSpeedSlider").value;
+        };
+        document.getElementById("bloomIntensitySlider").oninput = () => {
+          this.params.bloomIntensity = parseFloat(document.getElementById("bloomIntensitySlider").value);
+          document.getElementById("bloomIntensityValue").textContent = document.getElementById("bloomIntensitySlider").value;
+          if (this.bloomPass)
+            this.bloomPass.strength = this.params.bloomIntensity;
+        };
+        // New event listener for metalness slider.
+        document.getElementById("metalnessSlider").oninput = () => {
+          this.params.metalness = parseFloat(document.getElementById("metalnessSlider").value);
+          document.getElementById("metalnessValue").textContent = document.getElementById("metalnessSlider").value;
+          if (this.objectMesh)
+            this.objectMesh.material.uniforms.metalness.value = this.params.metalness;
+        };
+        // New event listener for roughness slider.
+        document.getElementById("roughnessSlider").oninput = () => {
+          this.params.roughness = parseFloat(document.getElementById("roughnessSlider").value);
+          document.getElementById("roughnessValue").textContent = document.getElementById("roughnessSlider").value;
+          if (this.objectMesh)
+            this.objectMesh.material.uniforms.roughness.value = this.params.roughness;
+        };
+    
+        document.getElementById("shapeSelect").onchange = () => {
+          this.params.shape = document.getElementById("shapeSelect").value;
+          this.createAnimation(this.fileHash, false);
+        };
+    
+        document.getElementById("colorAInput").onchange = () => {
+          this.params.colorA = document.getElementById("colorAInput").value;
+          if (this.objectMesh)
+            this.objectMesh.material.uniforms.colorA.value.set(this.params.colorA);
+        };
+        document.getElementById("colorBInput").onchange = () => {
+          this.params.colorB = document.getElementById("colorBInput").value;
+          if (this.objectMesh)
+            this.objectMesh.material.uniforms.colorB.value.set(this.params.colorB);
+        };
+        document.getElementById("color3Input").onchange = () => {
+          this.params.color3 = document.getElementById("color3Input").value;
+          if (this.objectMesh)
+            this.objectMesh.material.uniforms.color3.value.set(this.params.color3);
+        };
+      }
+    }
+    
+    // -----------------------------------------------------
+    // Create the initial HashAnimationApp instance using the selected hash.
+    // -----------------------------------------------------
+    let hashAnimationInstance = new HashAnimationApp(document.getElementById('hashSelect').value);
+    
+    // -----------------------------------------------------
+    // Event Listener: Switch Hash button.
+    // Destroys the current instance and creates a new one with the selected hash.
+    // -----------------------------------------------------
+    document.getElementById('switchButton').addEventListener('click', () => {
+      const newHash = document.getElementById('hashSelect').value;
+      if (hashAnimationInstance) {
+        hashAnimationInstance.destroy();
+      }
+      document.getElementById('scene-container').innerHTML = '';
+      hashAnimationInstance = new HashAnimationApp(newHash);
+    });
+    
+    // -----------------------------------------------------
+    // Event Listener: Randomize button.
+    // Generates a random hash and creates a new HashAnimationApp instance.
+    // -----------------------------------------------------
+    document.getElementById('randomizeButton').addEventListener('click', () => {
+      const randomHash = generateRandomHex(32);
+      if (hashAnimationInstance) {
+        hashAnimationInstance.destroy();
+      }
+      document.getElementById('scene-container').innerHTML = '';
+      hashAnimationInstance = new HashAnimationApp(randomHash);
+    });
+    //]]>
+  </script>
+</body>
+</html>
